@@ -9,6 +9,8 @@ import { AreasModule } from './modules/areas/areas.module';
 import { PackagesModule } from './modules/packages/packages.module';
 import { MikrotikModule } from './modules/mikrotik/mikrotik.module';
 import { BillingModule } from './modules/billing/billing.module';
+import { CollectionsModule } from './modules/collections/collections.module';
+import { AccountingModule } from './modules/accounting/accounting.module';
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { BillingModule } from './modules/billing/billing.module';
     PackagesModule,
     MikrotikModule,
     BillingModule,
+    CollectionsModule,
+    AccountingModule,
   ],
 })
 export class AppModule {}
