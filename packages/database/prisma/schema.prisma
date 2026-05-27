@@ -1,0 +1,866 @@
+// ═══════════════════════════════════════════════════════════════
+// ISP ERP Billing & Operations Platform — Database Schema
+// ═══════════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUTH & RBAC
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  phone           String?
+  passwordHash    String
+  name            String
+  roleId          String
+  role            Role      @relation(fields: [roleId], references: [id])
+  isActive        Boolean   @default(true)
+  twoFactorEnabled Boolean  @default(false)
+  twoFactorSecret String?
+  lastLoginAt     DateTime?
+  lastLoginIp     String?
+
+  // Relations
+  sessions        Session[]
+  auditLogs       AuditLog[]
+  collectorCustomers Customer[] @relation("CollectorCustomers")
+  collectedPayments Payment[]  @relation("CollectorPayments")
+  cashbookEntries CollectorCashbook[]
+  assignedTickets Ticket[]     @relation("TechnicianTickets")
+  createdTickets  Ticket[]     @relation("CreatedByUser")
+  journalEntries  JournalEntry[]
+  notifications   Notification[] @relation("NotificationCreator")
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("users")
+}
+
+model Role {
+  id          String @id @default(uuid())
+  name        String @unique
+  displayName String
+  description String?
+  permissions Json   // { "customers": ["read", "create", "update", "delete"], ... }
+  isSystem    Boolean @default(false)
+  users       User[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("roles")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshToken String   @unique
+  userAgent    String?
+  ipAddress    String?
+  expiresAt    DateTime
+  isRevoked    Boolean  @default(false)
+
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ─────────────────────────────────────────────────────────────
+// GEOGRAPHY — Areas, Zones, POPs
+// ─────────────────────────────────────────────────────────────
+
+model Area {
+  id        String     @id @default(uuid())
+  name      String     @unique
+  code      String?    @unique
+  zones     Zone[]
+  customers Customer[]
+
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("areas")
+}
+
+model Zone {
+  id        String     @id @default(uuid())
+  name      String
+  code      String?
+  areaId    String
+  area      Area       @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  pops      Pop[]
+  customers Customer[]
+
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([name, areaId])
+  @@map("zones")
+}
+
+model Pop {
+  id        String     @id @default(uuid())
+  name      String
+  code      String?
+  address   String?
+  gpsLat    Float?
+  gpsLng    Float?
+  zoneId    String
+  zone      Zone       @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  customers Customer[]
+  assets    InventoryItem[] @relation("PopAssets")
+  routers   MikrotikRouter[]
+
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([name, zoneId])
+  @@map("pops")
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOMER MANAGEMENT (Module 1)
+// ─────────────────────────────────────────────────────────────
+
+model Customer {
+  id              String          @id @default(uuid())
+  customerId      String          @unique // Human-readable: ISP-00001
+  name            String
+  phone           String
+  altPhone        String?
+  altContact      String?
+  address         String?
+  gpsLat          Float?
+  gpsLng          Float?
+  nidNumber       String?
+  businessInfo    String?
+  type            CustomerType    @default(HOME)
+  status          CustomerStatus  @default(ACTIVE)
+  joinDate        DateTime        @default(now())
+
+  // Geography
+  areaId          String
+  area            Area            @relation(fields: [areaId], references: [id])
+  zoneId          String
+  zone            Zone            @relation(fields: [zoneId], references: [id])
+  popId           String
+  pop             Pop             @relation(fields: [popId], references: [id])
+
+  // Package
+  packageId       String?
+  package         Package?        @relation(fields: [packageId], references: [id])
+  customPrice     Float?
+  billingCycle    BillingCycle    @default(MONTHLY)
+  billingDate     Int?            // Day of month for billing (1-28)
+
+  // Collector
+  collectorId     String?
+  collector       User?           @relation("CollectorCustomers", fields: [collectorId], references: [id])
+
+  // MikroTik / Network
+  pppoeUsername    String?         @unique
+  ipAddress       String?
+  macAddress      String?
+  routerId        String?
+  mikrotikRouter  MikrotikRouter? @relation(fields: [routerId], references: [id])
+  bandwidthProfile String?
+  isOnline        Boolean         @default(false)
+  lastSeen        DateTime?
+
+  // Billing state
+  advanceBalance  Float           @default(0)
+  totalDue        Float           @default(0)
+
+  // Relations
+  notes           CustomerNote[]
+  invoices        Invoice[]
+  payments        Payment[]
+  tickets         Ticket[]
+  assets          CustomerAsset[]
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([phone])
+  @@index([pppoeUsername])
+  @@index([status])
+  @@index([areaId])
+  @@index([collectorId])
+  @@map("customers")
+}
+
+model CustomerNote {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  content    String
+  category   String?  // payment_behavior, technical_issue, discount, collector_remark
+  createdBy  String?
+
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+  @@map("customer_notes")
+}
+
+enum CustomerType {
+  HOME
+  CORPORATE
+  SHARED
+  VIP
+  TEMPORARY
+  FRANCHISE
+}
+
+enum CustomerStatus {
+  ACTIVE
+  DUE_WARNING
+  GRACE_PERIOD
+  SUSPENDED
+  TEMPORARY_DISCONNECT
+  LEFT_CUSTOMER
+  DEAD_CONNECTION
+  MIGRATED
+}
+
+enum BillingCycle {
+  MONTHLY
+  CUSTOM
+  ANNIVERSARY
+}
+
+// ─────────────────────────────────────────────────────────────
+// MIKROTIK INTEGRATION (Module 2)
+// ─────────────────────────────────────────────────────────────
+
+model MikrotikRouter {
+  id            String     @id @default(uuid())
+  name          String     @unique
+  host          String
+  port          Int        @default(8728)
+  username      String
+  passwordEnc   String     // Encrypted password
+  isActive      Boolean    @default(true)
+  popId         String?
+  pop           Pop?       @relation(fields: [popId], references: [id])
+  syncFrequency SyncFrequency @default(MANUAL)
+  lastSyncAt    DateTime?
+
+  customers     Customer[]
+  syncLogs      SyncLog[]
+
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@map("mikrotik_routers")
+}
+
+model SyncLog {
+  id          String     @id @default(uuid())
+  routerId    String
+  router      MikrotikRouter @relation(fields: [routerId], references: [id], onDelete: Cascade)
+  status      SyncStatus
+  totalUsers  Int        @default(0)
+  synced      Int        @default(0)
+  failed      Int        @default(0)
+  missing     Int        @default(0)
+  duplicates  Int        @default(0)
+  details     Json?      // Detailed sync report
+  startedAt   DateTime   @default(now())
+  completedAt DateTime?
+  errorMessage String?
+
+  @@index([routerId])
+  @@map("sync_logs")
+}
+
+enum SyncFrequency {
+  MANUAL
+  HOURLY
+  DAILY
+}
+
+enum SyncStatus {
+  SUCCESS
+  FAILED
+  PARTIAL
+  IN_PROGRESS
+}
+
+// ─────────────────────────────────────────────────────────────
+// PACKAGES
+// ─────────────────────────────────────────────────────────────
+
+model Package {
+  id               String     @id @default(uuid())
+  name             String     @unique
+  bandwidth        String     // e.g., "10Mbps"
+  price            Float
+  mikrotikProfile  String?    // Corresponding MikroTik profile name
+  description      String?
+  isActive         Boolean    @default(true)
+
+  customers        Customer[]
+
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@map("packages")
+}
+
+// ─────────────────────────────────────────────────────────────
+// BILLING (Module 3)
+// ─────────────────────────────────────────────────────────────
+
+model Invoice {
+  id              String        @id @default(uuid())
+  invoiceNumber   String        @unique
+  customerId      String
+  customer        Customer      @relation(fields: [customerId], references: [id])
+  billingMonth    DateTime      // First day of billing month
+  subtotal        Float
+  tax             Float         @default(0)
+  discount        Float         @default(0)
+  penalty         Float         @default(0)
+  waiver          Float         @default(0)
+  total           Float
+  paidAmount      Float         @default(0)
+  dueAmount       Float
+  status          InvoiceStatus @default(UNPAID)
+  dueDate         DateTime
+  notes           String?
+
+  items           InvoiceItem[]
+  payments        Payment[]
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([customerId])
+  @@index([status])
+  @@index([billingMonth])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String           @id @default(uuid())
+  invoiceId   String
+  invoice     Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  type        BillComponentType
+  description String
+  amount      Float
+  quantity    Int              @default(1)
+  total       Float
+
+  @@map("invoice_items")
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  WAIVED
+  CANCELLED
+}
+
+enum BillComponentType {
+  INTERNET_PACKAGE
+  INSTALLATION_FEE
+  ONU_INSTALLMENT
+  MAINTENANCE
+  VAT_TAX
+  DISCOUNT
+  PENALTY
+  WAIVER
+  ONE_TIME
+}
+
+// ─────────────────────────────────────────────────────────────
+// PAYMENTS & COLLECTIONS (Module 4)
+// ─────────────────────────────────────────────────────────────
+
+model Payment {
+  id              String        @id @default(uuid())
+  receiptNumber   String        @unique
+  customerId      String
+  customer        Customer      @relation(fields: [customerId], references: [id])
+  invoiceId       String?
+  invoice         Invoice?      @relation(fields: [invoiceId], references: [id])
+  amount          Float
+  method          PaymentMethod @default(CASH)
+  collectorId     String?
+  collector       User?         @relation("CollectorPayments", fields: [collectorId], references: [id])
+  remarks         String?
+  proofUrl        String?       // Uploaded receipt/proof
+  collectionStatus CollectionStatus @default(PENDING)
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([customerId])
+  @@index([collectorId])
+  @@index([collectionStatus])
+  @@map("payments")
+}
+
+model CollectorCashbook {
+  id            String    @id @default(uuid())
+  collectorId   String
+  collector     User      @relation(fields: [collectorId], references: [id])
+  date          DateTime
+  totalAssigned Float     @default(0)
+  totalCollected Float    @default(0)
+  submittedAmount Float   @default(0)
+  pendingCash   Float     @default(0)
+  shortage      Float     @default(0)
+  excess        Float     @default(0)
+  status        CollectionStatus @default(PENDING)
+  remarks       String?
+  approvedBy    String?
+  approvedAt    DateTime?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([collectorId, date])
+  @@map("collector_cashbooks")
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  BKASH
+  NAGAD
+  ONLINE
+  OTHER
+}
+
+enum CollectionStatus {
+  PENDING
+  SUBMITTED
+  APPROVED
+  FLAGGED
+  REJECTED
+}
+
+// ─────────────────────────────────────────────────────────────
+// ACCOUNTING (Module 5)
+// ─────────────────────────────────────────────────────────────
+
+model LedgerAccount {
+  id          String       @id @default(uuid())
+  name        String       @unique
+  code        String?      @unique
+  type        LedgerType
+  parentId    String?
+  parent      LedgerAccount? @relation("LedgerHierarchy", fields: [parentId], references: [id])
+  children    LedgerAccount[] @relation("LedgerHierarchy")
+  balance     Float        @default(0)
+  description String?
+  isSystem    Boolean      @default(false)
+
+  entries     JournalLine[]
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("ledger_accounts")
+}
+
+model JournalEntry {
+  id          String        @id @default(uuid())
+  entryNumber String        @unique
+  date        DateTime      @default(now())
+  description String
+  reference   String?       // e.g., "INV-2026-000001", "PAY-000001"
+  referenceType String?     // invoice, payment, expense, salary, transfer
+  referenceId String?
+  lines       JournalLine[]
+  createdById String
+  createdBy   User          @relation(fields: [createdById], references: [id])
+
+  createdAt   DateTime      @default(now())
+
+  @@index([date])
+  @@index([referenceType, referenceId])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id          String        @id @default(uuid())
+  entryId     String
+  entry       JournalEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     LedgerAccount @relation(fields: [accountId], references: [id])
+  debit       Float         @default(0)
+  credit      Float         @default(0)
+  description String?
+
+  @@map("journal_lines")
+}
+
+model Expense {
+  id          String          @id @default(uuid())
+  date        DateTime        @default(now())
+  category    ExpenseCategory
+  description String
+  amount      Float
+  paidFrom    String?         // Cash / Bank account reference
+  receipt     String?         // File URL
+  approvedBy  String?
+
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([category])
+  @@index([date])
+  @@map("expenses")
+}
+
+enum LedgerType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum ExpenseCategory {
+  BANDWIDTH
+  ELECTRICITY
+  SALARY
+  TRANSPORT
+  MAINTENANCE
+  FUEL
+  EQUIPMENT
+  OFFICE_RENT
+  OTHER
+}
+
+// ─────────────────────────────────────────────────────────────
+// HR & SALARY (Module 6)
+// ─────────────────────────────────────────────────────────────
+
+model Employee {
+  id              String         @id @default(uuid())
+  employeeId      String         @unique
+  name            String
+  phone           String?
+  email           String?
+  department      String?
+  designation     String?
+  baseSalary      Float          @default(0)
+  status          EmployeeStatus @default(ACTIVE)
+  joinDate        DateTime       @default(now())
+  userId          String?        @unique // Link to User account if applicable
+
+  payrollRecords  PayrollRecord[]
+  attendance      AttendanceRecord[]
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@map("employees")
+}
+
+model PayrollRecord {
+  id           String   @id @default(uuid())
+  employeeId   String
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  month        DateTime // First day of payroll month
+  baseSalary   Float
+  bonus        Float    @default(0)
+  deductions   Float    @default(0)
+  advances     Float    @default(0)
+  incentives   Float    @default(0)
+  commission   Float    @default(0)
+  netSalary    Float
+  isPaid       Boolean  @default(false)
+  paidAt       DateTime?
+  remarks      String?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([employeeId, month])
+  @@map("payroll_records")
+}
+
+model AttendanceRecord {
+  id         String           @id @default(uuid())
+  employeeId String
+  employee   Employee         @relation(fields: [employeeId], references: [id])
+  date       DateTime
+  status     AttendanceStatus @default(PRESENT)
+  checkIn    DateTime?
+  checkOut   DateTime?
+  remarks    String?
+
+  @@unique([employeeId, date])
+  @@map("attendance_records")
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+  ON_LEAVE
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  HALF_DAY
+  ON_FIELD
+}
+
+// ─────────────────────────────────────────────────────────────
+// TICKETS & COMPLAINTS (Module 7)
+// ─────────────────────────────────────────────────────────────
+
+model Ticket {
+  id           String         @id @default(uuid())
+  ticketNumber String         @unique
+  customerId   String
+  customer     Customer       @relation(fields: [customerId], references: [id])
+  type         TicketType
+  priority     TicketPriority @default(MEDIUM)
+  status       TicketStatus   @default(OPEN)
+  subject      String
+  description  String?
+  assignedToId String?
+  assignedTo   User?          @relation("TechnicianTickets", fields: [assignedToId], references: [id])
+  createdById  String?
+  createdBy    User?          @relation("CreatedByUser", fields: [createdById], references: [id])
+  resolvedAt   DateTime?
+  closedAt     DateTime?
+  resolution   String?
+
+  comments     TicketComment[]
+
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([status])
+  @@index([customerId])
+  @@index([assignedToId])
+  @@map("tickets")
+}
+
+model TicketComment {
+  id        String   @id @default(uuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  content   String
+  authorId  String?
+  isInternal Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@map("ticket_comments")
+}
+
+enum TicketType {
+  TECHNICAL
+  BILLING
+  SERVICE_REQUEST
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+// ─────────────────────────────────────────────────────────────
+// INVENTORY & ASSETS (Module 8)
+// ─────────────────────────────────────────────────────────────
+
+model InventoryItem {
+  id          String         @id @default(uuid())
+  name        String
+  type        AssetType
+  serialNumber String?       @unique
+  condition   AssetCondition @default(NEW)
+  quantity    Int            @default(1)
+  supplier    String?
+  purchaseDate DateTime?
+  purchasePrice Float?
+  popId       String?
+  pop         Pop?           @relation("PopAssets", fields: [popId], references: [id])
+
+  movements   StockMovement[]
+  assignments CustomerAsset[]
+
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([type])
+  @@map("inventory_items")
+}
+
+model StockMovement {
+  id          String            @id @default(uuid())
+  itemId      String
+  item        InventoryItem     @relation(fields: [itemId], references: [id])
+  type        StockMovementType
+  quantity    Int               @default(1)
+  remarks     String?
+  performedBy String?
+
+  createdAt   DateTime          @default(now())
+
+  @@map("stock_movements")
+}
+
+model CustomerAsset {
+  id          String         @id @default(uuid())
+  customerId  String
+  customer    Customer       @relation(fields: [customerId], references: [id])
+  itemId      String
+  item        InventoryItem  @relation(fields: [itemId], references: [id])
+  assignedAt  DateTime       @default(now())
+  returnedAt  DateTime?
+  condition   AssetCondition @default(GOOD)
+  remarks     String?
+
+  @@map("customer_assets")
+}
+
+enum AssetType {
+  ROUTER
+  SWITCH
+  ONU
+  CABLE
+  SPLICE_BOX
+  BATTERY
+  OTHER
+}
+
+enum AssetCondition {
+  NEW
+  GOOD
+  DAMAGED
+  REPAIR
+  DISPOSED
+}
+
+enum StockMovementType {
+  STOCK_IN
+  STOCK_OUT
+  ASSIGNED
+  RETURNED
+  DAMAGED
+  REPAIRED
+}
+
+// ─────────────────────────────────────────────────────────────
+// NOTIFICATIONS (Module 9)
+// ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id          String              @id @default(uuid())
+  type        NotificationType
+  channel     NotificationChannel
+  recipientId String?             // Customer ID
+  recipient   String?             // Phone/email if no customer link
+  subject     String?
+  message     String
+  status      String              @default("PENDING") // PENDING, SENT, FAILED
+  sentAt      DateTime?
+  errorMessage String?
+  createdById String?
+  createdBy   User?               @relation("NotificationCreator", fields: [createdById], references: [id])
+
+  createdAt   DateTime            @default(now())
+
+  @@index([type])
+  @@index([status])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  DUE_REMINDER
+  PAYMENT_CONFIRMATION
+  OVERDUE_WARNING
+  COMPLAINT_UPDATE
+  SALARY_NOTIFICATION
+  CUSTOM
+}
+
+enum NotificationChannel {
+  SMS
+  WHATSAPP
+  EMAIL
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUDIT & SECURITY (Module 12)
+// ─────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  action      String   // CREATE, UPDATE, DELETE, LOGIN, etc.
+  entity      String   // customers, invoices, payments, etc.
+  entityId    String?
+  oldValues   Json?
+  newValues   Json?
+  ipAddress   String?
+  userAgent   String?
+
+  createdAt   DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SYSTEM SETTINGS
+// ─────────────────────────────────────────────────────────────
+
+model SystemSetting {
+  id    String @id @default(uuid())
+  key   String @unique
+  value String
+  type  String @default("string") // string, number, boolean, json
+
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+model SequenceCounter {
+  id      String @id @default(uuid())
+  name    String @unique // customer_id, invoice_number, ticket_number, etc.
+  current Int    @default(0)
+
+  @@map("sequence_counters")
+}

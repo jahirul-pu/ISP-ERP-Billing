@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.next/
+out/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Turbo
+.turbo/
+
+# Prisma
+packages/database/prisma/migrations/*.sql
+packages/database/client/
+packages/database/prisma/dev.db
+packages/database/prisma/dev.db-journal
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test
+coverage/
+
+# Docker
+docker/data/
