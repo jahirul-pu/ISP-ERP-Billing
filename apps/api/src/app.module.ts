@@ -8,6 +8,7 @@ import { CustomersModule } from './modules/customers/customers.module';
 import { AreasModule } from './modules/areas/areas.module';
 import { PackagesModule } from './modules/packages/packages.module';
 import { MikrotikModule } from './modules/mikrotik/mikrotik.module';
+import { BillingModule } from './modules/billing/billing.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { MikrotikModule } from './modules/mikrotik/mikrotik.module';
     AreasModule,
     PackagesModule,
     MikrotikModule,
+    BillingModule,
   ],
 })
 export class AppModule {}
