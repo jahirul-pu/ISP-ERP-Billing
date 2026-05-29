@@ -17,6 +17,7 @@ import {
   HiOutlineServerStack,
   HiOutlineUserGroup,
   HiOutlineShieldCheck,
+  HiOutlineLockClosed,
 } from 'react-icons/hi2';
 
 interface NavItem {
@@ -72,6 +73,8 @@ const navigation: NavSection[] = [
   {
     label: 'System',
     items: [
+      { label: 'Users', href: '/settings/users', icon: <HiOutlineUsers /> },
+      { label: 'Roles', href: '/settings/roles', icon: <HiOutlineLockClosed /> },
       { label: 'Settings', href: '/settings', icon: <HiOutlineCog6Tooth /> },
     ],
   },

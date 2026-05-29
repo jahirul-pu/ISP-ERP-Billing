@@ -34,15 +34,45 @@ export class AuthService {
       });
 
       if (!user) {
+        await this.prisma.auditLog.create({
+          data: {
+            userId: null,
+            action: 'LOGIN_FAILED',
+            entity: 'users',
+            ipAddress,
+            userAgent,
+            newValues: { email: dto.email, reason: 'User not found' }
+          }
+        }).catch(() => {});
         throw new UnauthorizedException('Invalid credentials');
       }
 
       if (!user.isActive) {
+        await this.prisma.auditLog.create({
+          data: {
+            userId: user.id,
+            action: 'LOGIN_FAILED',
+            entity: 'users',
+            ipAddress,
+            userAgent,
+            newValues: { email: dto.email, reason: 'Account is deactivated' }
+          }
+        }).catch(() => {});
         throw new UnauthorizedException('Account is deactivated');
       }
 
       const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
       if (!isPasswordValid) {
+        await this.prisma.auditLog.create({
+          data: {
+            userId: user.id,
+            action: 'LOGIN_FAILED',
+            entity: 'users',
+            ipAddress,
+            userAgent,
+            newValues: { email: dto.email, reason: 'Invalid password' }
+          }
+        }).catch(() => {});
         throw new UnauthorizedException('Invalid credentials');
       }
 
@@ -73,6 +103,19 @@ export class AuthService {
         },
       });
 
+      // Log successful audit
+      await this.prisma.auditLog.create({
+        data: {
+          userId: user.id,
+          action: 'LOGIN',
+          entity: 'users',
+          entityId: user.id,
+          ipAddress,
+          userAgent,
+          newValues: { email: user.email }
+        }
+      }).catch(() => {});
+
       this.logger.log(`User ${user.email} logged in from ${ipAddress}`);
 
       return {
@@ -100,6 +143,18 @@ export class AuthService {
           email: 'admin@isp-erp.local',
           role: 'SUPER_ADMIN',
         });
+
+        // Log mock successful audit
+        await this.prisma.auditLog.create({
+          data: {
+            userId: null,
+            action: 'LOGIN',
+            entity: 'users',
+            ipAddress,
+            userAgent,
+            newValues: { email: 'admin@isp-erp.local', isMock: true }
+          }
+        }).catch(() => {});
         
         return {
           ...tokens,

@@ -36,13 +36,36 @@ export class MikrotikService {
   }
 
   async findAll() {
-    return this.prisma.mikrotikRouter.findMany({
+    const routers = await this.prisma.mikrotikRouter.findMany({
       include: {
         pop: { select: { name: true } },
         _count: { select: { customers: true, syncLogs: true } },
       },
       orderBy: { name: 'asc' },
     });
+
+    const activeCounts = await this.prisma.customer.groupBy({
+      by: ['routerId'],
+      where: {
+        isOnline: true,
+        routerId: { in: routers.map(r => r.id) }
+      },
+      _count: {
+        _all: true
+      }
+    });
+
+    const activeMap = new Map(
+      activeCounts
+        .filter(ac => ac.routerId)
+        .map(ac => [ac.routerId!, ac._count._all])
+    );
+
+    return routers.map(r => ({
+      ...r,
+      totalSecrets: r._count.customers,
+      activeSessions: activeMap.get(r.id) || 0,
+    }));
   }
 
   async findOne(id: string) {
@@ -54,7 +77,19 @@ export class MikrotikService {
       },
     });
     if (!router) throw new NotFoundException('Router not found');
-    return router;
+
+    const activeSessions = await this.prisma.customer.count({
+      where: {
+        routerId: id,
+        isOnline: true,
+      }
+    });
+
+    return {
+      ...router,
+      totalSecrets: router._count.customers,
+      activeSessions,
+    };
   }
 
   async create(dto: CreateRouterDto) {
@@ -302,6 +337,48 @@ export class MikrotikService {
       client = await this.getClient(id);
       await client.connect();
       return await client.getActiveConnections();
+    } finally {
+      if (client) {
+        await client.close();
+      }
+    }
+  }
+
+  async getSecrets(id: string) {
+    await this.findOne(id); // Throws 404 if router not found
+    return this.prisma.customer.findMany({
+      where: { routerId: id },
+      select: {
+        id: true,
+        customerId: true,
+        name: true,
+        phone: true,
+        pppoeUsername: true,
+        bandwidthProfile: true,
+        isOnline: true,
+        lastSeen: true,
+        package: {
+          select: {
+            name: true,
+            price: true,
+          }
+        }
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async disconnectUser(id: string, username: string): Promise<boolean> {
+    let client: MikrotikClient | null = null;
+    try {
+      client = await this.getClient(id);
+      await client.connect();
+      const res = await client.disconnectUser(username);
+      await this.prisma.customer.updateMany({
+        where: { routerId: id, pppoeUsername: username },
+        data: { isOnline: false }
+      });
+      return res;
     } finally {
       if (client) {
         await client.close();

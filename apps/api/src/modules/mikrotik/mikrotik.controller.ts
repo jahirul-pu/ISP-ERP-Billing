@@ -66,4 +66,17 @@ export class MikrotikController {
   async getOnlineUsers(@Param('id') id: string) {
     return { success: true, data: await this.service.getOnlineUsers(id) };
   }
+
+  @Get('routers/:id/secrets')
+  @ApiOperation({ summary: 'List synced PPPoE secrets (database customers) for a router' })
+  async getSecrets(@Param('id') id: string) {
+    return { success: true, data: await this.service.getSecrets(id) };
+  }
+
+  @Post('routers/:id/active/:username/disconnect')
+  @ApiOperation({ summary: 'Disconnect an active PPPoE session from the router' })
+  async disconnectUser(@Param('id') id: string, @Param('username') username: string) {
+    const success = await this.service.disconnectUser(id, username);
+    return { success, message: success ? 'User disconnected successfully' : 'User session not found or already closed' };
+  }
 }

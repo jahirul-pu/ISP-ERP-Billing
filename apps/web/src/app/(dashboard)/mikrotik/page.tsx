@@ -9,7 +9,9 @@ import {
   HiOutlineGlobeAlt, 
   HiOutlineTrash,
   HiOutlineEye,
-  HiOutlineEyeSlash
+  HiOutlineEyeSlash,
+  HiOutlineXMark,
+  HiOutlineMagnifyingGlass
 } from 'react-icons/hi2';
 import api from '@/lib/api';
 import { toast } from 'react-hot-toast';
@@ -42,6 +44,16 @@ export default function MikrotikPage() {
   const [routers, setRouters] = useState<RouterConfig[]>([]);
   const [syncLogs, setSyncLogs] = useState<SyncLog[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // Router Details Inspector Modal State
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [selectedRouter, setSelectedRouter] = useState<RouterConfig | null>(null);
+  const [detailsTab, setDetailsTab] = useState<'active' | 'secrets'>('active');
+  const [activeSessions, setActiveSessions] = useState<any[]>([]);
+  const [secretsList, setSecretsList] = useState<any[]>([]);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsSearch, setDetailsSearch] = useState('');
+  const [disconnectingUser, setDisconnectingUser] = useState<Record<string, boolean>>({});
   
   // Router Modal Form State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -220,6 +232,85 @@ export default function MikrotikPage() {
     }
   };
 
+  const fetchDetails = async (routerId: string, tab: 'active' | 'secrets') => {
+    setDetailsLoading(true);
+    try {
+      if (tab === 'active') {
+        const res = await api.get(`/mikrotik/routers/${routerId}/online-users`);
+        if (res.data?.success) {
+          setActiveSessions(res.data.data);
+        }
+      } else {
+        const res = await api.get(`/mikrotik/routers/${routerId}/secrets`);
+        if (res.data?.success) {
+          setSecretsList(res.data.data);
+        }
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || `Failed to fetch ${tab === 'active' ? 'active sessions' : 'secrets'}`);
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  const handleTabChange = (tab: 'active' | 'secrets') => {
+    setDetailsTab(tab);
+    setDetailsSearch('');
+    if (selectedRouter) {
+      fetchDetails(selectedRouter.id, tab);
+    }
+  };
+
+  const openDetailsModal = (router: RouterConfig, initialTab: 'active' | 'secrets' = 'active') => {
+    setSelectedRouter(router);
+    setDetailsTab(initialTab);
+    setDetailsSearch('');
+    setActiveSessions([]);
+    setSecretsList([]);
+    setIsDetailsOpen(true);
+    fetchDetails(router.id, initialTab);
+  };
+
+  const handleDisconnect = async (username: string) => {
+    if (!selectedRouter) return;
+    if (!confirm(`Are you sure you want to disconnect active session for ${username}?`)) return;
+
+    setDisconnectingUser(prev => ({ ...prev, [username]: true }));
+    try {
+      const res = await api.post(`/mikrotik/routers/${selectedRouter.id}/active/${username}/disconnect`);
+      if (res.data?.success) {
+        toast.success(`Session for ${username} disconnected.`);
+        fetchDetails(selectedRouter.id, 'active');
+        fetchData();
+      } else {
+        toast.error('Failed to disconnect user.');
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Failed to disconnect user.');
+    } finally {
+      setDisconnectingUser(prev => ({ ...prev, [username]: false }));
+    }
+  };
+
+  const filteredActiveSessions = activeSessions.filter(session => {
+    const term = detailsSearch.toLowerCase();
+    return (
+      (session.name && session.name.toLowerCase().includes(term)) ||
+      (session.address && session.address.toLowerCase().includes(term)) ||
+      (session.callerId && session.callerId.toLowerCase().includes(term))
+    );
+  });
+
+  const filteredSecrets = secretsList.filter(secret => {
+    const term = detailsSearch.toLowerCase();
+    return (
+      (secret.name && secret.name.toLowerCase().includes(term)) ||
+      (secret.pppoeUsername && secret.pppoeUsername.toLowerCase().includes(term)) ||
+      (secret.customerId && secret.customerId.toLowerCase().includes(term)) ||
+      (secret.bandwidthProfile && secret.bandwidthProfile.toLowerCase().includes(term))
+    );
+  });
+
   return (
     <div>
       {/* Header */}
@@ -266,11 +357,19 @@ export default function MikrotikPage() {
                     <span style={{ color: 'var(--text-secondary)' }}>Username:</span>
                     <p style={{ fontWeight: 600 }}>{router.username}</p>
                   </div>
-                  <div>
+                  <div 
+                    onClick={() => openDetailsModal(router, 'secrets')}
+                    style={{ cursor: 'pointer', padding: '4px 8px', borderRadius: '6px', transition: 'background 0.2s', userSelect: 'none' }}
+                    className="hover-card-metric"
+                  >
                     <span style={{ color: 'var(--text-secondary)' }}>PPPoE Secrets:</span>
                     <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--primary-600)' }}>{router.totalSecrets}</p>
                   </div>
-                  <div>
+                  <div 
+                    onClick={() => openDetailsModal(router, 'active')}
+                    style={{ cursor: 'pointer', padding: '4px 8px', borderRadius: '6px', transition: 'background 0.2s', userSelect: 'none' }}
+                    className="hover-card-metric"
+                  >
                     <span style={{ color: 'var(--text-secondary)' }}>Active PPPoE:</span>
                     <p style={{ fontWeight: 700, fontSize: '16px', color: 'var(--success-600)', display: 'flex', alignItems: 'center', gap: '4px' }}>
                       <span className="status-dot online" style={{ margin: 0 }}></span> {router.activeSessions}
@@ -298,6 +397,14 @@ export default function MikrotikPage() {
                     disabled={syncingRouter[router.id]}
                   >
                     <HiOutlineArrowPath className={syncingRouter[router.id] ? 'spin' : ''} /> {syncingRouter[router.id] ? 'Syncing...' : 'Sync Config'}
+                  </button>
+                  <button 
+                    className="btn btn-secondary btn-sm" 
+                    style={{ padding: '6px' }} 
+                    onClick={() => openDetailsModal(router, 'active')}
+                    title="View Secrets & Active Sessions"
+                  >
+                    <HiOutlineEye />
                   </button>
                   <button className="btn btn-secondary btn-sm" style={{ padding: '6px' }} onClick={() => openEditModal(router)}>
                     Edit
@@ -475,6 +582,245 @@ export default function MikrotikPage() {
         </div>
       )}
 
+      {/* Router Details Modal */}
+      {isDetailsOpen && selectedRouter && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            background: 'rgba(15, 23, 42, 0.6)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 90,
+            animation: 'fadeIn 0.2s ease-out'
+          }}
+        >
+          <div className="card" style={{ width: '850px', maxWidth: '95%', maxHeight: '85vh', display: 'flex', flexDirection: 'column', padding: '24px', position: 'relative' }}>
+            {/* Modal Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid var(--neutral-200)', paddingBottom: '12px' }}>
+              <div>
+                <h2 style={{ fontSize: '16px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <HiOutlineServer style={{ color: 'var(--primary-500)' }} />
+                  {selectedRouter.name} Inspector
+                </h2>
+                <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                  {selectedRouter.host}:{selectedRouter.port} &bull; {selectedRouter.username}
+                </p>
+              </div>
+              <button 
+                className="btn btn-secondary btn-sm" 
+                style={{ padding: '6px' }} 
+                onClick={() => setIsDetailsOpen(false)}
+              >
+                <HiOutlineXMark style={{ fontSize: '18px' }} />
+              </button>
+            </div>
+
+            {/* Modal Tabs and Controls */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '4px', background: 'var(--neutral-100)', padding: '3px', borderRadius: '8px' }}>
+                <button
+                  type="button"
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    borderRadius: '6px',
+                    border: 'none',
+                    background: detailsTab === 'active' ? 'var(--white)' : 'transparent',
+                    color: detailsTab === 'active' ? 'var(--neutral-800)' : 'var(--text-secondary)',
+                    boxShadow: detailsTab === 'active' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                  onClick={() => handleTabChange('active')}
+                >
+                  Active Sessions ({activeSessions.length})
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    borderRadius: '6px',
+                    border: 'none',
+                    background: detailsTab === 'secrets' ? 'var(--white)' : 'transparent',
+                    color: detailsTab === 'secrets' ? 'var(--neutral-800)' : 'var(--text-secondary)',
+                    boxShadow: detailsTab === 'secrets' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                  onClick={() => handleTabChange('secrets')}
+                >
+                  PPPoE Secrets ({secretsList.length})
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flex: 1, justifyContent: 'flex-end', minWidth: '240px' }}>
+                <div style={{ position: 'relative', flex: 1, maxWidth: '240px' }}>
+                  <span style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+                    <HiOutlineMagnifyingGlass />
+                  </span>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder={`Search ${detailsTab === 'active' ? 'active sessions' : 'secrets'}...`}
+                    style={{ paddingLeft: '32px', height: '32px', fontSize: '13px' }}
+                    value={detailsSearch}
+                    onChange={(e) => setDetailsSearch(e.target.value)}
+                  />
+                </div>
+                <button 
+                  className="btn btn-secondary btn-sm" 
+                  style={{ height: '32px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  onClick={() => fetchDetails(selectedRouter.id, detailsTab)}
+                  disabled={detailsLoading}
+                >
+                  <HiOutlineArrowPath className={detailsLoading ? 'spin' : ''} />
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body / Table Scroll Area */}
+            <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--neutral-200)', borderRadius: '8px', background: 'var(--neutral-50)', minHeight: '300px' }}>
+              {detailsLoading ? (
+                <div style={{ padding: '60px 0', textAlign: 'center' }}>
+                  <div className="skeleton" style={{ height: '32px', width: '90%', margin: '0 auto 12px auto', borderRadius: '4px' }}></div>
+                  <div className="skeleton" style={{ height: '32px', width: '90%', margin: '0 auto 12px auto', borderRadius: '4px' }}></div>
+                  <div className="skeleton" style={{ height: '32px', width: '90%', margin: '0 auto 12px auto', borderRadius: '4px' }}></div>
+                  <div className="skeleton" style={{ height: '32px', width: '90%', margin: '0 auto 12px auto', borderRadius: '4px' }}></div>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '12px' }}>
+                    {detailsTab === 'active' ? 'Connecting to MikroTik API live...' : 'Fetching database secrets...'}
+                  </p>
+                </div>
+              ) : detailsTab === 'active' ? (
+                /* Active Sessions Table */
+                <div className="data-table-wrapper" style={{ margin: 0, border: 'none' }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Username</th>
+                        <th>IP Address</th>
+                        <th>MAC / Caller ID</th>
+                        <th>Uptime</th>
+                        <th style={{ textAlign: 'right' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredActiveSessions.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px' }}>
+                            {detailsSearch ? 'No matching active sessions found.' : 'No active sessions online.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredActiveSessions.map((session, idx) => (
+                          <tr key={session.id || idx}>
+                            <td style={{ fontWeight: 600 }}>{session.name}</td>
+                            <td style={{ fontFamily: 'monospace' }}>{session.address || '—'}</td>
+                            <td style={{ fontFamily: 'monospace' }}>{session.callerId || '—'}</td>
+                            <td style={{ color: 'var(--text-secondary)' }}>{session.uptime || '—'}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                style={{ color: 'var(--danger-500)', fontSize: '11px', padding: '2px 8px', height: '24px' }}
+                                onClick={() => handleDisconnect(session.name)}
+                                disabled={disconnectingUser[session.name]}
+                              >
+                                {disconnectingUser[session.name] ? 'Kicking...' : 'Disconnect'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                /* Secrets / Database Sync Table */
+                <div className="data-table-wrapper" style={{ margin: 0, border: 'none' }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Customer ID</th>
+                        <th>Name</th>
+                        <th>PPPoE Username</th>
+                        <th>Bandwidth Profile</th>
+                        <th>Package</th>
+                        <th>Status</th>
+                        <th>Last Seen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredSecrets.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px' }}>
+                            {detailsSearch ? 'No matching synced secrets found.' : 'No secrets synced to database. Trigger a router sync first.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredSecrets.map((secret) => (
+                          <tr key={secret.id}>
+                            <td>
+                              <a 
+                                href={`/customers/${secret.id}`} 
+                                style={{ color: 'var(--primary-600)', textDecoration: 'none', fontWeight: 500 }}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {secret.customerId}
+                              </a>
+                            </td>
+                            <td style={{ fontWeight: 600 }}>{secret.name}</td>
+                            <td style={{ fontFamily: 'monospace' }}>{secret.pppoeUsername || '—'}</td>
+                            <td>
+                              <span style={{ fontSize: '12px', background: 'var(--neutral-100)', padding: '2px 6px', borderRadius: '4px' }}>
+                                {secret.bandwidthProfile || 'default'}
+                              </span>
+                            </td>
+                            <td>
+                              {secret.package ? (
+                                <div style={{ fontSize: '12px' }}>
+                                  <div style={{ fontWeight: 500 }}>{secret.package.name}</div>
+                                  <div style={{ color: 'var(--text-secondary)' }}>{secret.package.price} BDT</div>
+                                </div>
+                              ) : '—'}
+                            </td>
+                            <td>
+                              <span className={`badge ${secret.isOnline ? 'badge-success' : 'badge-danger'}`} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                <span className={`status-dot ${secret.isOnline ? 'online' : 'offline'}`} style={{ margin: 0, width: '6px', height: '6px' }}></span>
+                                {secret.isOnline ? 'Online' : 'Offline'}
+                              </span>
+                            </td>
+                            <td style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
+                              {secret.lastSeen ? new Date(secret.lastSeen).toLocaleString() : 'Never'}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px', borderTop: '1px solid var(--neutral-200)', paddingTop: '12px' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setIsDetailsOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Mini CSS injections for rotation */}
       <style jsx global>{`
         @keyframes spin {
@@ -487,6 +833,10 @@ export default function MikrotikPage() {
         @keyframes fadeIn {
           from { opacity: 0; }
           to { opacity: 1; }
+        }
+        .hover-card-metric:hover {
+          background: var(--neutral-100) !important;
+          transform: translateY(-0.5px);
         }
       `}</style>
     </div>
